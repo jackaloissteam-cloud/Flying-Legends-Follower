@@ -42,5 +42,8 @@ export default defineSchema({
     maxAltitude: v.union(v.number(), v.null()),
     maxSpeed: v.union(v.number(), v.null()),
     durationMs: v.union(v.number(), v.null()),
+    // Last time the plane was actually seen in the air. Used to close a flight
+    // at the real landing time when nobody was watching.
+    lastSeenTime: v.optional(v.number()),
   }).index("by_takeoff", ["takeoffTime"]),
 });

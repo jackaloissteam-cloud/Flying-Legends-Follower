@@ -283,33 +283,87 @@ async function getNewestFlight(ctx: MutationCtx) {
   return await ctx.db.query("flights").withIndex("by_takeoff").order("desc").first();
 }
 
+// Signal drops shorter than this are treated as the same flight.
+const MERGE_GAP_MS = 10 * 60 * 1000;
+// If the plane wasn't seen for longer than this, it landed unobserved;
+// the flight ends at the last airborne sighting. Longer than the 30-min cron.
+const STALE_MS = 45 * 60 * 1000;
+
+function lastSeenOf(f: { takeoffTime: number; lastSeenTime?: number }) {
+  return f.lastSeenTime ?? f.takeoffTime;
+}
+
 async function openFlight(ctx: MutationCtx, takeoffTime: number) {
-  const open = await getNewestFlight(ctx);
-  if (open && open.landingTime === null) return; // already tracking
+  const newest = await getNewestFlight(ctx);
+  if (newest && newest.landingTime === null) {
+    if (takeoffTime - lastSeenOf(newest) <= STALE_MS) return; // still the same flight
+    await closeFlight(ctx, takeoffTime); // stale: closes at last sighting
+  } else if (newest && newest.landingTime !== null && takeoffTime - newest.landingTime <= MERGE_GAP_MS) {
+    // Brief signal loss: continue the previous flight instead of starting a new one
+    await ctx.db.patch(newest._id, { landingTime: null, durationMs: null });
+    return;
+  }
   await ctx.db.insert("flights", {
     takeoffTime,
     landingTime: null,
     maxAltitude: null,
     maxSpeed: null,
     durationMs: null,
+    lastSeenTime: takeoffTime,
   });
 }
 
 async function updateOpenFlight(ctx: MutationCtx, altitude: number | null, speed: number | null) {
   const open = await getNewestFlight(ctx);
   if (!open || open.landingTime !== null) return;
-  const patch: { maxAltitude?: number; maxSpeed?: number } = {};
+  const patch: { maxAltitude?: number; maxSpeed?: number; lastSeenTime: number } = { lastSeenTime: Date.now() };
   if (altitude !== null && (open.maxAltitude === null || altitude > open.maxAltitude)) patch.maxAltitude = altitude;
   if (speed !== null && (open.maxSpeed === null || speed > open.maxSpeed)) patch.maxSpeed = speed;
-  if (Object.keys(patch).length > 0) await ctx.db.patch(open._id, patch);
+  await ctx.db.patch(open._id, patch);
 }
 
 // Idempotent: closes an open flight, no-op otherwise
-async function closeFlight(ctx: MutationCtx, landingTime: number) {
+async function closeFlight(ctx: MutationCtx, now: number) {
   const open = await getNewestFlight(ctx);
   if (!open || open.landingTime !== null) return;
+  const lastSeen = lastSeenOf(open);
+  const landingTime = now - lastSeen > STALE_MS ? lastSeen : now;
   await ctx.db.patch(open._id, { landingTime, durationMs: landingTime - open.takeoffTime });
 }
+
+// One-off repair: rebuilds the flights list from the saved airborne position data.
+export const rebuildFlights = internalMutation({
+  args: {},
+  handler: async (ctx): Promise<number> => {
+    const old = await ctx.db.query("flights").take(2000);
+    for (const f of old) await ctx.db.delete(f._id);
+    const snaps = await ctx.db.query("flightSnapshots").take(8000);
+    const air = snaps.filter(s => s.found && !s.onGround).sort((a, b) => a.timestamp - b.timestamp);
+    type Draft = { takeoffTime: number; lastSeen: number; maxAltitude: number | null; maxSpeed: number | null };
+    const drafts: Draft[] = [];
+    for (const s of air) {
+      const cur = drafts[drafts.length - 1];
+      if (!cur || s.timestamp - cur.lastSeen > STALE_MS) {
+        drafts.push({ takeoffTime: s.timestamp, lastSeen: s.timestamp, maxAltitude: s.altitude, maxSpeed: s.speed });
+        continue;
+      }
+      cur.lastSeen = s.timestamp;
+      if (s.altitude !== null && (cur.maxAltitude === null || s.altitude > cur.maxAltitude)) cur.maxAltitude = s.altitude;
+      if (s.speed !== null && (cur.maxSpeed === null || s.speed > cur.maxSpeed)) cur.maxSpeed = s.speed;
+    }
+    for (const d of drafts) {
+      await ctx.db.insert("flights", {
+        takeoffTime: d.takeoffTime,
+        landingTime: d.lastSeen,
+        durationMs: d.lastSeen - d.takeoffTime,
+        maxAltitude: d.maxAltitude,
+        maxSpeed: d.maxSpeed,
+        lastSeenTime: d.lastSeen,
+      });
+    }
+    return drafts.length;
+  },
+});
 
 export const startFlight = mutation({
   args: { takeoffTime: v.number() },

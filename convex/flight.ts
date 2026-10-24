@@ -1,4 +1,5 @@
-import { action, mutation, query } from "./_generated/server";
+import { action, internalAction, internalMutation, mutation, query } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 
@@ -55,22 +56,105 @@ export const resolveAircraft = action({
   },
 });
 
+type LiveData = {
+  found: boolean;
+  onGround: boolean;
+  altitude: number | null;
+  speed: number | null;
+  heading: number | null;
+  lat: number | null;
+  lon: number | null;
+  squawk: string | null;
+  emergency: string | null;
+  timestamp: number;
+};
+
 // Fetch live flight data from adsb.lol — optional icao24 override for custom tracking
 export const fetchLiveData = action({
   args: { icao24Override: v.optional(v.string()) },
-  handler: async (ctx, args): Promise<{
-    found: boolean;
-    onGround: boolean;
-    altitude: number | null;
-    speed: number | null;
-    heading: number | null;
-    lat: number | null;
-    lon: number | null;
-    squawk: string | null;
-    emergency: string | null;
-    timestamp: number;
-  }> => {
-    const url = `https://api.adsb.lol/v2/icao/${args.icao24Override ?? ICAO24}`;
+  handler: async (_ctx, args): Promise<LiveData> => fetchAdsb(args.icao24Override ?? ICAO24),
+});
+
+// Background check (cron): records Frances Dell's state even when no one has the app open.
+// Only active Friday–Sunday (Vienna time), per the owner's request.
+function isWeekendInVienna(now: Date): boolean {
+  const day = new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone: "Europe/Vienna" }).format(now);
+  return day === "Fri" || day === "Sat" || day === "Sun";
+}
+
+export const backgroundCheck = internalAction({
+  args: {},
+  handler: async (ctx): Promise<null> => {
+    if (!isWeekendInVienna(new Date())) return null;
+    const result = await fetchAdsb(ICAO24).catch(() => null);
+    if (!result) return null;
+    await ctx.runMutation(internal.flight.recordBackgroundState, result);
+    return null;
+  },
+});
+
+export const recordBackgroundState = internalMutation({
+  args: {
+    found: v.boolean(),
+    onGround: v.boolean(),
+    altitude: v.union(v.number(), v.null()),
+    speed: v.union(v.number(), v.null()),
+    heading: v.union(v.number(), v.null()),
+    lat: v.union(v.number(), v.null()),
+    lon: v.union(v.number(), v.null()),
+    squawk: v.union(v.string(), v.null()),
+    emergency: v.union(v.string(), v.null()),
+    timestamp: v.number(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.insert("flightSnapshots", args);
+    const airborne = args.found && !args.onGround;
+    if (airborne) {
+      await openFlight(ctx, args.timestamp);
+      await updateOpenFlight(ctx, args.altitude, args.speed);
+    } else {
+      await closeFlight(ctx, args.timestamp);
+    }
+    const status: FlightStatus = !args.found ? "hangar"
+      : !args.onGround ? "airborne"
+      : args.speed !== null && args.speed > 5 ? "taxiing" : "landed";
+    await logStatusChange(ctx, status, STATUS_MESSAGES[status], args.timestamp);
+  },
+});
+
+type FlightStatus = "hangar" | "taxiing" | "airborne" | "landed";
+
+const STATUS_MESSAGES: Record<FlightStatus, string> = {
+  hangar:  "Frances Dell steht friedlich im Hangar.",
+  taxiing: "Triebwerk läuft — Frances Dell rollt zur Startbahn.",
+  airborne:"✈ AIRBORNE — Frances Dell ist in der Luft!",
+  landed:  "Mission abgeschlossen. Motor aus. Propeller läuft aus.",
+};
+
+const PUSH: Partial<Record<string, { title: string; body: string; urgency: "high" | "normal" }>> = {
+  taxiing:  { title: "📡 Signal gefunden — Frances Dell", body: "Triebwerk läuft, sie rollt zur Startbahn!", urgency: "high" },
+  airborne: { title: "✈ AIRBORNE — Frances Dell", body: "Frances Dell ist in der Luft!", urgency: "high" },
+  landed:   { title: "Mission abgeschlossen", body: "Motor aus. Propeller läuft aus. Hangartor schließt sich.", urgency: "normal" },
+};
+
+// Logs an event + sends a push only when the status actually changed.
+// Shared by the open app and the background recorder so nobody gets duplicates.
+async function logStatusChange(ctx: MutationCtx, type: string, message: string, timestamp: number) {
+  const last = await ctx.db.query("flightEvents").order("desc").first();
+  if (last?.type === type) return;
+  await ctx.db.insert("flightEvents", { type, message, timestamp });
+  const push = PUSH[type];
+  if (push) {
+    await ctx.scheduler.runAfter(0, internal.pushNotifications.sendNotification, push);
+    await ctx.scheduler.runAfter(0, internal.emailAlerts.sendAlertEmail, {
+      title: push.title, body: push.body, timestamp,
+    });
+  }
+}
+
+async function fetchAdsb(icao24: string): Promise<LiveData> {
+  {
+    const url = `https://api.adsb.lol/v2/icao/${icao24}`;
     const res = await fetch(url, {
       headers: { "Accept": "application/json" },
     });
@@ -121,10 +205,8 @@ export const fetchLiveData = action({
       emergency: ac.emergency ?? null,
       timestamp: Date.now(),
     };
-  },
-});
-
-// Save flight state snapshot to DB
+  }
+}
 export const saveSnapshot = mutation({
   args: {
     found: v.boolean(),
@@ -190,49 +272,49 @@ export const saveEvent = mutation({
     timestamp: v.number(),
   },
   handler: async (ctx, args) => {
-    await ctx.db.insert("flightEvents", args);
-
-    // Send push notification on key status changes
-    if (args.type === "airborne" || args.type === "landed") {
-      const titles: Record<string, string> = {
-        airborne: "✈ AIRBORNE — Frances Dell",
-        landed: "Mission abgeschlossen",
-      };
-      const bodies: Record<string, string> = {
-        airborne: "Frances Dell ist in der Luft!",
-        landed: "Motor aus. Propeller läuft aus. Hangartor schließt sich.",
-      };
-      await ctx.scheduler.runAfter(0, internal.pushNotifications.sendNotification, {
-        title: titles[args.type] ?? args.type,
-        body: bodies[args.type] ?? args.message,
-        urgency: args.type === "airborne" ? "high" : "normal",
-      });
-    }
+    await logStatusChange(ctx, args.type, args.message, args.timestamp);
   },
 });
 
 // Start a new flight session (called on takeoff). No-ops if a flight is
 // already open — this makes it safe to call every poll, not just on the
 // exact transition detected in one browser session.
+async function getNewestFlight(ctx: MutationCtx) {
+  return await ctx.db.query("flights").withIndex("by_takeoff").order("desc").first();
+}
+
+async function openFlight(ctx: MutationCtx, takeoffTime: number) {
+  const open = await getNewestFlight(ctx);
+  if (open && open.landingTime === null) return; // already tracking
+  await ctx.db.insert("flights", {
+    takeoffTime,
+    landingTime: null,
+    maxAltitude: null,
+    maxSpeed: null,
+    durationMs: null,
+  });
+}
+
+async function updateOpenFlight(ctx: MutationCtx, altitude: number | null, speed: number | null) {
+  const open = await getNewestFlight(ctx);
+  if (!open || open.landingTime !== null) return;
+  const patch: { maxAltitude?: number; maxSpeed?: number } = {};
+  if (altitude !== null && (open.maxAltitude === null || altitude > open.maxAltitude)) patch.maxAltitude = altitude;
+  if (speed !== null && (open.maxSpeed === null || speed > open.maxSpeed)) patch.maxSpeed = speed;
+  if (Object.keys(patch).length > 0) await ctx.db.patch(open._id, patch);
+}
+
+// Idempotent: closes an open flight, no-op otherwise
+async function closeFlight(ctx: MutationCtx, landingTime: number) {
+  const open = await getNewestFlight(ctx);
+  if (!open || open.landingTime !== null) return;
+  await ctx.db.patch(open._id, { landingTime, durationMs: landingTime - open.takeoffTime });
+}
+
 export const startFlight = mutation({
   args: { takeoffTime: v.number() },
   handler: async (ctx, args) => {
-    const open = await ctx.db
-      .query("flights")
-      .withIndex("by_takeoff")
-      .order("desc")
-      .first();
-    if (open && open.landingTime === null) {
-      // Already tracking an open flight — nothing to do.
-      return;
-    }
-    await ctx.db.insert("flights", {
-      takeoffTime: args.takeoffTime,
-      landingTime: null,
-      maxAltitude: null,
-      maxSpeed: null,
-      durationMs: null,
-    });
+    await openFlight(ctx, args.takeoffTime);
   },
 });
 
@@ -243,39 +325,15 @@ export const updateFlight = mutation({
     speed: v.union(v.number(), v.null()),
   },
   handler: async (ctx, args) => {
-    const open = await ctx.db
-      .query("flights")
-      .withIndex("by_takeoff")
-      .order("desc")
-      .first();
-    if (!open || open.landingTime !== null) return;
-    const patch: { maxAltitude?: number; maxSpeed?: number } = {};
-    if (args.altitude !== null && (open.maxAltitude === null || args.altitude > open.maxAltitude)) {
-      patch.maxAltitude = args.altitude;
-    }
-    if (args.speed !== null && (open.maxSpeed === null || args.speed > open.maxSpeed)) {
-      patch.maxSpeed = args.speed;
-    }
-    if (Object.keys(patch).length > 0) await ctx.db.patch(open._id, patch);
+    await updateOpenFlight(ctx, args.altitude, args.speed);
   },
 });
 
-// Land — close the open flight session. Safe to call any time the aircraft
-// is confirmed not airborne (idempotent no-op if nothing is open), so a
-// stale open flight from a missed transition always gets closed eventually.
+// Land — close the open flight session.
 export const landFlight = mutation({
   args: { landingTime: v.number() },
   handler: async (ctx, args) => {
-    const open = await ctx.db
-      .query("flights")
-      .withIndex("by_takeoff")
-      .order("desc")
-      .first();
-    if (!open || open.landingTime !== null) return;
-    await ctx.db.patch(open._id, {
-      landingTime: args.landingTime,
-      durationMs: args.landingTime - open.takeoffTime,
-    });
+    await closeFlight(ctx, args.landingTime);
   },
 });
 

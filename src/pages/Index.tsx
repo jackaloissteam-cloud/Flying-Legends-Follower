@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { useThemeByStatus } from "@/hooks/use-theme-by-status.ts";
 import { useReverseGeocode } from "@/hooks/use-reverse-geocode.ts";
 import { useMerlinSound } from "@/hooks/use-merlin-sound.ts";
+import { useAlertSound } from "@/hooks/use-alert-sound.ts";
 import { usePushNotifications } from "@/hooks/use-push-notifications.ts";
 import FlightMap from "@/components/flight-map.tsx";
 import TrackerView from "@/pages/index/_components/tracker-view.tsx";
@@ -87,6 +88,7 @@ export default function Index() {
   const lastFlights  = useQuery(api.flight.getLastFlights);
 
   const [primeMerlin, revealMerlin, merlinRemaining] = useMerlinSound();
+  const [unlockAlert, playAlert] = useAlertSound();
   const { status: pushStatus, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications();
 
   // Intro sequence — starts only after user clicks "Starten" (required for audio autoplay)
@@ -123,6 +125,8 @@ export default function Index() {
   }, [resolveAc]);
 
   const triggerMoment = useCallback((newStatus: FlightStatus) => {
+    // Audible alert whenever the signal appears (plane leaves hangar state)
+    if (prevStatusRef.current === "hangar" && newStatus !== "hangar") playAlert();
     if (newStatus === "taxiing" || (newStatus === "airborne" && prevStatusRef.current === "hangar")) {
       setShowHangarOpen(true);
       setTimeout(() => setShowHangarOpen(false), 3800);
@@ -135,7 +139,7 @@ export default function Index() {
       setShowMissionDone(true);
       setTimeout(() => setShowMissionDone(false), 4000);
     }
-  }, []);
+  }, [playAlert]);
 
   const poll = useCallback(async () => {
     try {
@@ -224,19 +228,19 @@ export default function Index() {
             <img src={HERO_URL} alt="Flying Legends"
               className="w-full rounded-2xl object-contain"
               style={{ boxShadow: "0 0 80px oklch(0.72 0.18 65 / 40%)" }} />
-            <h1 className="text-4xl md:text-6xl font-bold tracking-tight font-serif"
+            <h1 className="text-4xl md:text-5xl font-bold tracking-tight font-serif text-balance"
               style={{
                 background: "linear-gradient(160deg, #e8ecf4 0%, #9aa0b4 35%, #d8dce8 60%, #b0b6c8 85%, #e0e4f0 100%)",
                 WebkitBackgroundClip: "text",
                 WebkitTextFillColor: "transparent",
                 textShadow: "none",
                 filter: "drop-shadow(0 0 18px rgba(180,190,210,0.45))",
-              }}>Flying Legends</h1>
+              }}>Flying Legends Follower</h1>
             <p className="text-xs tracking-[0.25em] uppercase text-muted-foreground font-sans">
               P-51D Mustang · Frances Dell · OO-NZW
             </p>
             <button
-              onClick={() => { primeMerlin(); setStarted(true); }}
+              onClick={() => { primeMerlin(); unlockAlert(); setStarted(true); }}
               className="w-full max-w-xs px-10 py-5 rounded-full font-sans text-base tracking-[0.3em] uppercase font-semibold cursor-pointer transition-all duration-200 active:scale-95"
               style={{ background: "oklch(0.72 0.18 65)", color: "oklch(0.1 0.01 45)", boxShadow: "0 0 40px oklch(0.72 0.18 65 / 50%)" }}
             >
@@ -290,14 +294,14 @@ export default function Index() {
                   style={{ boxShadow: "0 0 80px oklch(0.72 0.18 65 / 35%)" }}
                 />
                 <p className="text-xs tracking-[0.45em] uppercase text-primary font-sans">Willkommen an Bord</p>
-                <h1 className="text-5xl md:text-7xl font-bold tracking-tight font-serif"
+                <h1 className="text-4xl md:text-5xl font-bold tracking-tight font-serif text-balance"
                   style={{
                     color: "#b0b8c8",
                     textShadow: "0 0 60px rgba(160,170,190,0.4), 0 2px 8px rgba(0,0,0,0.8)",
                     background: "linear-gradient(160deg, #d0d8e8 0%, #8e96a8 40%, #c8d0e0 70%, #a0a8b8 100%)",
                     WebkitBackgroundClip: "text",
                     WebkitTextFillColor: "transparent",
-                  }}>Flying Legends</h1>
+                  }}>Flying Legends Follower</h1>
                 <div className="h-px w-40" style={{ background: "oklch(0.72 0.18 65 / 50%)" }} />
                 <p className="text-[11px] tracking-[0.2em] uppercase font-sans"
                   style={{ color: "oklch(0.78 0.16 65)" }}>

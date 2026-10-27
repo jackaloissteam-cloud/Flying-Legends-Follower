@@ -112,7 +112,7 @@ export const recordBackgroundState = internalMutation({
     if (airborne) {
       await openFlight(ctx, args.timestamp);
       await updateOpenFlight(ctx, args.altitude, args.speed);
-    } else {
+    } else if (args.found && args.onGround) {
       await closeFlight(ctx, args.timestamp);
     }
     const status: FlightStatus = !args.found ? "hangar"
@@ -191,7 +191,7 @@ async function fetchAdsb(icao24: string): Promise<LiveData> {
     }
     const altRaw = ac.alt_baro;
     const altitude = typeof altRaw === "number" ? altRaw : null;
-    const onGround = ac.on_ground === true || ac.on_ground === 1 || ac.ground === true || altitude === 0;
+    const onGround = ac.on_ground === true || ac.on_ground === 1 || ac.ground === true || ac.ground === 1 || altRaw === "ground" || altitude === 0;
 
     return {
       found: true,

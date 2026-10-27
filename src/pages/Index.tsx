@@ -160,7 +160,7 @@ export default function Index() {
       // transition happened in an earlier session.
       if (newStatus === "airborne") {
         await startFlight({ takeoffTime: Date.now() });
-      } else {
+      } else if (newStatus === "landed") {
         await landFlight({ landingTime: Date.now() });
       }
 

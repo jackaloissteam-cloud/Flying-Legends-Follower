@@ -34,7 +34,7 @@ type LiveData = {
 };
 
 const STATUS_LABEL: Record<FlightStatus, string> = {
-  hangar:   "Am Boden",
+  hangar:   "Kein ADS-B-Signal",
   taxiing:  "Rollend",
   airborne: "In der Luft",
   landed:   "Gelandet",

@@ -56,6 +56,7 @@ function Propeller({ status }: { status: FlightStatus }) {
 
 export default function Index() {
   const [introPhase, setIntroPhase]           = useState<IntroPhase>("hangar");
+  const [museumOpen, setMuseumOpen] = useState(false); // DRUDE_MUSEUM_HOTSPOT
   const [showHangarOpen, setShowHangarOpen]   = useState(false);
   const [showAirborne, setShowAirborne]       = useState(false);
   const [showMissionDone, setShowMissionDone] = useState(false);
@@ -401,6 +402,28 @@ export default function Index() {
         )}
       </AnimatePresence>
 
+      {/* DRUDE_MUSEUM_HOTSPOT — The Beginning */}
+      <AnimatePresence>
+        {museumOpen && (
+          <motion.div
+            className="fixed inset-0 z-[100] flex flex-col"
+            style={{ background: "#0c0d0e" }}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            role="dialog" aria-modal="true" aria-label="The Beginning – Museumsgalerie"
+          >
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-amber-900/40" style={{ background: "#14120f" }}>
+              <span className="font-serif tracking-widest text-amber-100 text-sm">THE BEGINNING <span className="text-amber-300/50">· FLYING LEGENDS</span></span>
+              <button type="button" onClick={() => setMuseumOpen(false)} aria-label="Galerie schließen"
+                className="text-amber-100 border border-amber-600/50 rounded-lg px-4 py-2 text-sm cursor-pointer">
+                ✕ Schließen
+              </button>
+            </div>
+            <iframe title="The Beginning – historisches Bildarchiv" src="/the-beginning/index.html"
+              className="flex-1 w-full border-0" style={{ minHeight: 0, background: "#0c0d0e" }} />
+          </motion.div>
+        )}
+      </AnimatePresence>
       {/* ── MAIN APP ── */}
       <motion.div
         initial={{ opacity: 0 }}
@@ -518,6 +541,17 @@ export default function Index() {
               />
             )}
           </AnimatePresence>
+          {/* DRUDE_MUSEUM_HOTSPOT — Die historische Tafel im Hangar */}
+          {status === "hangar" && (
+            <button
+              type="button"
+              aria-label="Museumstafel öffnen: The Beginning"
+              title="The Beginning – historische Bilder entdecken"
+              onClick={() => setMuseumOpen(true)}
+              className="absolute z-20 cursor-pointer rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
+              style={{ left: "1.9%", top: "53%", width: "8.2%", height: "17%", background: "transparent" }}
+            />
+          )}
           {/* Airborne warm overlay */}
           <AnimatePresence>
             {status === "airborne" && (
